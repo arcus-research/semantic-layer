@@ -531,7 +531,7 @@ function settleResult(
   if (responseReceipt.accepted && providerReasoningUnavailable(provider, value)) {
     recordReasoningUnavailable(provider, sink, trace, responseReceipt.recordId);
   }
-  recordUsageAndTools(provider, sink, trace, value, geminiToolCorrelation, context);
+  recordUsageAndTools(provider, sink, trace, value, requestRecordId, geminiToolCorrelation, context);
   recordProviderState(provider, operation, sink, trace, 'completed');
   sink.record({
     kind: 'lifecycle', phase: 'end', name: `${provider}.${operation}`, trace,
@@ -610,7 +610,8 @@ function instrumentStream(
       }
       if (phase === 'end' && provider !== 'gemini') {
         recordUsageAndTools(
-          provider, sink, trace, semanticTerminal, geminiToolCorrelation, context, streamPartIndex,
+          provider, sink, trace, semanticTerminal, requestRecordId, geminiToolCorrelation,
+          context, streamPartIndex,
         );
       }
     } else if (phase === 'error') {
@@ -636,6 +637,7 @@ function instrumentStream(
         sink,
         trace,
         part,
+        requestRecordId,
         geminiToolCorrelation,
         context,
         streamPartIndex,
@@ -783,6 +785,7 @@ function recordUsageAndTools(
   sink: SourceSink,
   trace: TraceIdentity,
   value: unknown,
+  requestRecordId?: string,
   geminiToolCorrelation?: GeminiToolCorrelation,
   context?: ProviderCaptureContext,
   observationIndex = 0,
@@ -819,6 +822,7 @@ function recordUsageAndTools(
     sink.record({
       kind: 'tool', phase: 'event', name: `${provider}.tool.proposed`, trace,
       native: { provider, tool: snapshotNative(tool) },
+      ...(requestRecordId ? { parentRecordId: requestRecordId } : {}),
       semantic: { type: 'tool.proposal', provider, ...proposal },
     });
   }

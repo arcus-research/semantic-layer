@@ -25,6 +25,7 @@ from semantic_layer import (
     provider_capture_context,
     reset_capture_for_tests,
 )
+from semantic_layer.capture_v1 import AdmissionReceipt, OpenTraceReceipt
 from semantic_layer.validation import validate_artifact
 
 _TRACE_SCHEMA_PATH = (
@@ -165,7 +166,9 @@ def test_openai_concurrent_same_name_proposals_keep_exact_native_ids(
     with ThreadPoolExecutor(max_workers=2) as executor:
         list(executor.map(run, [1, 2]))
 
-    records = _trace_records(capture.shutdown().artifact_path)
+    artifact_path = capture.shutdown().artifact_path
+    assert validate_artifact(artifact_path).valid
+    records = _trace_records(artifact_path)
     requests = [record for record in records if record["kind"] == "model.request"]
     responses = [record for record in records if record["kind"] == "model.response"]
     proposals = [record for record in records if record["kind"] == "tool.proposal"]
@@ -179,6 +182,18 @@ def test_openai_concurrent_same_name_proposals_keep_exact_native_ids(
         "call-2",
     ]
     assert {record["data"]["name"] for record in proposals} == {"lookup"}
+    for proposal in proposals:
+        slot = proposal["data"]["native_call_id"].split("-")[1]
+        response = next(
+            record for record in responses
+            if f"considered {slot}" in json.dumps(record["data"]["reasoning"])
+        )
+        request_id = next(
+            link["record"] for link in response["links"] if link["type"] == "result_of"
+        )
+        assert proposal["parent"] == request_id
+        assert any(request["id"] == request_id for request in requests)
+
     assert len({record["data"]["call_id"] for record in proposals}) == 2
     assert all(
         any(
@@ -2891,6 +2906,8 @@ def test_gemini_singleton_afc_pairs_only_with_matching_exact_native_ids(
     proposal = next(record for record in records if record["kind"] == "tool.proposal")
     call = next(record for record in records if record["kind"] == "tool.call")
     result = next(record for record in records if record["kind"] == "tool.result")
+    request_ids = {record["id"] for record in records if record["kind"] == "model.request"}
+    assert proposal.get("parent") not in request_ids
     assert proposal["data"]["native_call_id"] == "provider-call-1"
     assert call["data"]["native_call_id"] == "provider-call-1"
     assert result["data"]["native_call_id"] == "provider-call-1"
@@ -3397,7 +3414,60 @@ def test_candidate_ambiguity_is_bounded_and_preserves_delivered_evidence(
     assert len(responses) == 1
     assert "answer-0" in json.dumps(responses[0])
     proposals = [record for record in records if record["kind"] == "tool.proposal"]
+    request_record = next(record for record in records if record["kind"] == "model.request")
+    assert all(proposal["parent"] == request_record["id"] for proposal in proposals)
     if mode not in {"stream", "cancel"}:
         assert {record["data"]["name"] for record in proposals} == (
             {"tool_0", "tool_1"} if mode == "response" else {"tool_0"}
         )
+
+
+@pytest.mark.parametrize("admit_request", [True, False])
+def test_stream_proposal_uses_only_admitted_request(admit_request: bool) -> None:
+    records: list[dict[str, Any]] = []
+    request_id: str | None = None
+
+    class Sink:
+        def open_trace(self, _record: Any) -> OpenTraceReceipt:
+            return OpenTraceReceipt(True, record_id="root", identity={
+                "trace_id": "trace", "operation_id": "operation", "session_id": "session",
+            })
+
+        def record(self, record: dict[str, Any]) -> AdmissionReceipt:
+            nonlocal request_id
+            records.append(record)
+            if record.get("semantic", {}).get("type") == "model.request":
+                if not admit_request:
+                    return AdmissionReceipt(False, reason="fixture_rejection")
+                request_id = f"record_{len(records)}"
+            return AdmissionReceipt(True, record_id=f"record_{len(records)}")
+
+    chunk = {"candidates": [{"content": {"parts": [{"function_call": {
+        "id": "same-call", "name": "lookup", "args": {},
+    }}]}}]}
+
+    def stream(**_kwargs: Any) -> Any:
+        yield chunk
+
+    models = SimpleNamespace(generate_content=stream, generate_content_stream=stream)
+    client = SimpleNamespace(
+        models=models, aio=SimpleNamespace(models=SimpleNamespace(**vars(models)))
+    )
+    lifecycle = gemini_provider_adapter(version="2.11.0").create_source(client).install(Sink())
+    try:
+        returned = client.models.generate_content_stream(model="fixture", contents="hello")
+        assert next(returned) is chunk
+        assert not [
+            record for record in records
+            if record.get("semantic", {}).get("type") == "model.response"
+        ]
+        assert list(returned) == []
+        proposals = [
+            record for record in records
+            if record.get("semantic", {}).get("type") == "tool.proposal"
+        ]
+        assert len(proposals) == 1
+        assert proposals[0].get("parent_record_id") == request_id
+        returned.close()
+    finally:
+        lifecycle.deactivate()

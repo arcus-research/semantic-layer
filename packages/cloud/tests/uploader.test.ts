@@ -909,12 +909,14 @@ describe('semantic-layer-cloud', () => {
     const artifact = await copyExample(root);
     let activeRequests = 0;
     let abortedRequests = 0;
+    let requestStarted = false;
     const uploader = createCloudUploader({
       endpoint: 'https://ingest.invalid',
       ingestKey: 'test-ingest-key-123456',
       spoolDirectory: join(root, 'spool'),
       fetch: async (_input, init) => {
         activeRequests += 1;
+        requestStarted = true;
         return await new Promise<Response>((_resolve, reject) => {
           const signal = init?.signal;
           const abort = () => {
@@ -935,12 +937,16 @@ describe('semantic-layer-cloud', () => {
         });
       },
     });
-    await uploader.enqueueArtifact(artifact);
-    const started = Date.now();
-    const result = await uploader.flush({ deadlineMs: 20 });
-    expect(Date.now() - started).toBeLessThan(250);
-    expect(result).toMatchObject({ pendingBundles: 1, timedOut: true });
-    await uploader.shutdown();
+    try {
+      await uploader.enqueueArtifact(artifact);
+      await vi.waitFor(() => expect(requestStarted).toBe(true));
+      const started = Date.now();
+      const result = await uploader.flush({ deadlineMs: 20 });
+      expect(Date.now() - started).toBeLessThan(250);
+      expect(result).toMatchObject({ pendingBundles: 1, timedOut: true });
+    } finally {
+      await uploader.shutdown();
+    }
     expect(abortedRequests).toBeGreaterThan(0);
     expect(activeRequests).toBe(0);
   });
