@@ -135,6 +135,14 @@ The adapter keeps the model proposal separate from the application call. The
 proposal stores the proposed name and input, while the call stores what the
 application executed. A difference between them remains visible.
 
+Proposals from directly observed provider response output retain the exact
+originating `model.request` as their `parent` when its capture receipt is
+available. The response links to that request with `result_of`. A streaming
+proposal can precede the terminal response or remain without one; capture does
+not invent a response or infer ownership when the request receipt is
+unavailable. Intermediate Gemini automatic function calling history proposals
+have no exact captured model request and remain without this ownership.
+
 Every pair uses the exact native call identity when one exists. Equal names,
 inputs, output values, timing, and list position do not prove identity. The
 same rule applies when provider and framework hooks report parts of one tool

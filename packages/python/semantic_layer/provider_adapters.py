@@ -974,6 +974,11 @@ class _ProviderSource(CaptureSource):
                     "name": f"{self.provider}.tool.proposed",
                     "trace": trace.identity,
                     "native": {"provider": self.provider, "tool": tool},
+                    **(
+                        {"parent_record_id": trace.request_record_id}
+                        if trace.request_record_id is not None
+                        else {}
+                    ),
                     "semantic": semantic,
                 }
             )
@@ -1519,6 +1524,11 @@ class _ProviderSource(CaptureSource):
                     "name": f"{self.provider}.tool.proposed",
                     "trace": trace.identity,
                     "native": {"provider": self.provider, "tool": tool},
+                    **(
+                        {"parent_record_id": trace.request_record_id}
+                        if trace.request_record_id is not None
+                        else {}
+                    ),
                     "semantic": semantic,
                 }
             )

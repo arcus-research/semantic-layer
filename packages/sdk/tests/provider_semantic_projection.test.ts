@@ -18,6 +18,7 @@ import {
   initialize,
   openAIProviderAdapter,
   resetCaptureForTests,
+  validateArtifact,
   withProviderCaptureContext,
 } from '../src/index.js';
 import type { SemanticTraceRecord } from '../src/trace/semantic-projector.js';
@@ -369,7 +370,9 @@ describe.each([
       }],
     })));
 
-    const records = await traceRecords((await capture.shutdown()).artifactPath);
+    const artifactPath = (await capture.shutdown()).artifactPath;
+    expect((await validateArtifact(artifactPath)).valid).toBe(true);
+    const records = await traceRecords(artifactPath);
     const requests = records.filter((record) => record.kind === 'model.request');
     const responses = records.filter((record) => record.kind === 'model.response');
     const proposals = records.filter((record) => record.kind === 'tool.proposal');
@@ -385,6 +388,14 @@ describe.each([
       'call-2',
     ]);
     expect(proposals.every((record) => record.data.name === 'lookup')).toBe(true);
+    for (const proposal of proposals) {
+      const slot = String(proposal.data.native_call_id).split('-')[1];
+      const response = responses.find((record) => JSON.stringify(record.data.reasoning)
+        .includes(`considered ${slot}`))!;
+      const requestId = response.links!.find((link) => link.type === 'result_of')!.record;
+      expect(proposal.parent).toBe(requestId);
+      expect(requests.some((request) => request.id === requestId)).toBe(true);
+    }
     expect(new Set(proposals.map((record) => record.data.call_id)).size).toBe(2);
     expect(responses.every((record) => requests.some((request) => (
       record.links?.some((link) => link.type === 'result_of' && link.record === request.id)
@@ -2552,7 +2563,13 @@ describe.each(['openai', 'openrouter', 'gemini'] as const)('%s candidate ambigui
       if (cancel) break;
     }
     expect(consumed).toBe(cancel ? 1 : 3);
-    const records = await traceRecords((await capture.shutdown()).artifactPath);
+    const artifactPath = (await capture.shutdown()).artifactPath;
+    expect((await validateArtifact(artifactPath)).valid).toBe(true);
+    const records = await traceRecords(artifactPath);
+    const requestRecord = records.find((record) => record.kind === 'model.request')!;
+    for (const proposal of records.filter((record) => record.kind === 'tool.proposal')) {
+      expect(proposal.parent).toBe(requestRecord.id);
+    }
     if (cancel) {
       expect(records.find((record) => record.kind === 'model.response')?.data).toMatchObject({
         status: 'cancelled', content: 'answer 0',
@@ -2566,4 +2583,75 @@ describe.each(['openai', 'openrouter', 'gemini'] as const)('%s candidate ambigui
       }) }),
     ]);
   });
+});
+
+it.each([true, false])('keeps an unfinished stream proposal tied only to an admitted request (%s)', async (admitRequest) => {
+  const calls: SourceRecord[] = [];
+  let sequence = 0;
+  let requestId: string | undefined;
+  const receipt = () => ({ accepted: true as const, recordId: `record_ownership_${++sequence}`, settled: Promise.resolve() });
+  const sink: SourceSink = {
+    openTrace: () => ({ ...receipt(), identity: {
+      runId: 'run_ownership', traceId: 'trace_ownership', operationId: 'operation_ownership',
+    } }),
+    record(input) {
+      calls.push(input);
+      if (input.semantic?.type === 'model.request' && !admitRequest) {
+        return { accepted: false, reason: 'fixture_rejection', settled: Promise.resolve() };
+      }
+      const result = receipt();
+      if (input.semantic?.type === 'model.request') requestId = result.recordId;
+      return result;
+    },
+  };
+  const chunk = { candidates: [{ content: { parts: [
+    { functionCall: { id: 'same-call', name: 'lookup', args: {} } },
+  ] } }] };
+  const stream = { async *[Symbol.asyncIterator]() { yield chunk; } };
+  const client = { models: {
+    generateContentInternal: (_request: unknown) => chunk,
+    generateContentStreamInternal: (_request: unknown) => stream,
+  } };
+  const lifecycle = geminiProviderAdapter({ version: '2.10.0' }).createSource(client).install(sink);
+  try {
+    const returned = client.models.generateContentStreamInternal({ model: 'fixture', contents: 'hello' });
+    expect(returned).toBe(stream);
+    const iterator = returned[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toBe(chunk);
+    const proposals = calls.filter((call) => call.semantic?.type === 'tool.proposal');
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.parentRecordId).toBe(requestId);
+    expect(calls.filter((call) => call.semantic?.type === 'model.response')).toEqual([]);
+    await iterator.return();
+  } finally {
+    await lifecycle.deactivate();
+  }
+});
+
+it('seals a streamed proposal with request ownership when no response completes', async () => {
+  const error = new Error('fixture stream failure');
+  const chunk = { candidates: [{ content: { parts: [
+    { functionCall: { id: 'unfinished-call', name: 'lookup', args: {} } },
+  ] } }] };
+  const stream = { async *[Symbol.asyncIterator]() { yield chunk; throw error; } };
+  const client = { models: {
+    generateContentInternal: (_request: unknown) => chunk,
+    generateContentStreamInternal: (_request: unknown) => stream,
+  } };
+  const output = await mkdtemp(join(tmpdir(), 'semantic-proposal-unfinished-'));
+  const capture = initialize({ output, serviceName: 'proposal-unfinished' });
+  capture.instrument({ adapter: geminiProviderAdapter({ version: '2.10.0' }), client });
+  const iterator = client.models.generateContentStreamInternal({
+    model: 'fixture', contents: 'hello',
+  })[Symbol.asyncIterator]();
+  expect((await iterator.next()).value).toBe(chunk);
+  await expect(iterator.next()).rejects.toBe(error);
+  const artifactPath = (await capture.shutdown()).artifactPath;
+  expect((await validateArtifact(artifactPath)).valid).toBe(true);
+  const records = await traceRecords(artifactPath);
+  const request = records.find((record) => record.kind === 'model.request')!;
+  const proposals = records.filter((record) => record.kind === 'tool.proposal');
+  expect(proposals).toHaveLength(1);
+  expect(proposals[0]!.parent).toBe(request.id);
+  expect(records.filter((record) => record.kind === 'model.response')).toEqual([]);
 });
