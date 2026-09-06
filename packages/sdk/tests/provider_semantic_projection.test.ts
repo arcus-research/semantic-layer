@@ -2433,3 +2433,137 @@ it('retains Gemini native tool groups from config in order', async () => {
   expect(request.tool_definitions).toEqual(original);
   expect(tools).toEqual(original);
 });
+
+describe.each(['openai', 'openrouter', 'gemini'] as const)('%s candidate ambiguity', (provider) => {
+  const response = (indexes: number[], tools = false) => provider === 'gemini'
+    ? { candidates: indexes.map((index) => ({ index, content: {
+      role: 'model', parts: [{ text: `answer ${index}` },
+        ...(tools ? [{ functionCall: { id: `call-${index}`, name: `lookup${index}`,
+          args: { candidate: index } } }] : [])],
+    } })) }
+    : { choices: indexes.map((index) => ({ index,
+      message: { role: 'assistant', content: `answer ${index}`,
+        ...(tools ? { tool_calls: [{ id: `call-${index}`, type: 'function',
+          function: { name: `lookup${index}`, arguments: JSON.stringify({ candidate: index }) } }] } : {}),
+      },
+      delta: { content: `answer ${index}` },
+    })) };
+
+  it.each([
+    { name: 'default single candidate', count: undefined, indexes: [0], losses: 0 },
+    { name: 'explicit single candidate', count: 1, indexes: [0], losses: 0 },
+    { name: 'requested alternatives', count: 2, indexes: [0], losses: 1 },
+    { name: 'observed alternatives', count: undefined, indexes: [0, 1], losses: 1 },
+    { name: 'alternative index alone', count: undefined, indexes: [1], losses: 1 },
+    { name: 'request and response deduplication', count: 2, indexes: [0, 1], losses: 1 },
+  ])('seals $name', async ({ count, indexes, losses }) => {
+    const result = response(indexes, true);
+    const original = structuredClone(result);
+    const call = (_request: unknown) => result;
+    const client = provider === 'gemini'
+      ? { models: { generateContentInternal: call, generateContentStreamInternal: call } }
+      : { responses: { create: call }, chat: { completions: { create: call } } };
+    const output = await mkdtemp(join(tmpdir(), 'semantic-candidate-ambiguity-'));
+    const capture = initialize({ output, serviceName: 'candidate-ambiguity' });
+    capture.instrument({ adapter: provider === 'gemini'
+      ? geminiProviderAdapter({ version: '2.10.0' })
+      : openAIProviderAdapter({ provider, version: '6.46.0' }), client });
+    const request = provider === 'gemini'
+      ? { model: 'fixture', contents: 'Hello', config: { candidateCount: count } }
+      : { model: 'fixture', messages: [{ role: 'user', content: 'Hello' }], n: count };
+    // Separate roots each retain one loss, while request and response evidence deduplicate.
+    for (let index = 0; index < 2; index += 1) {
+      const returned = 'models' in client
+        ? client.models!.generateContentInternal(request)
+        : client.chat!.completions.create(request);
+      expect(returned).toBe(result);
+    }
+    expect(result).toEqual(original);
+    const records = await traceRecords((await capture.shutdown()).artifactPath);
+    expect(records.filter((record) => record.kind === 'model.response')).toHaveLength(2);
+    expect(records.filter((record) => record.kind === 'tool.proposal').map((record) => record.data.name))
+      .toEqual([...indexes, ...indexes].map((index) => `lookup${index}`));
+    const gaps = records.filter((record) => record.kind === 'loss');
+    expect(gaps).toHaveLength(losses * 2);
+    for (const gap of gaps) expect(gap.data).toMatchObject({
+      reason: 'provider_candidate_ambiguity', count: 1, recoverable: false,
+    });
+  });
+
+  it('does not invoke candidate count or index accessors', async () => {
+    let reads = 0;
+    const getter = { enumerable: true, get() { reads += 1; return 2; } };
+    const result = response([0]);
+    const alternatives = 'candidates' in result ? result.candidates! : result.choices!;
+    Object.defineProperty(alternatives[0], 'index', getter);
+    const count = Object.defineProperty({}, provider === 'gemini' ? 'candidateCount' : 'n', getter);
+    const request = provider === 'gemini'
+      ? { model: 'fixture', contents: 'Hello', config: count }
+      : Object.defineProperty({ model: 'fixture', messages: [] }, 'n', getter);
+    const call = (_request: unknown) => result;
+    const client = provider === 'gemini'
+      ? { models: { generateContentInternal: call, generateContentStreamInternal: call } }
+      : { responses: { create: call }, chat: { completions: { create: call } } };
+    const output = await mkdtemp(join(tmpdir(), 'semantic-candidate-accessors-'));
+    const capture = initialize({ output, serviceName: 'candidate-accessors' });
+    capture.instrument({ adapter: provider === 'gemini'
+      ? geminiProviderAdapter({ version: '2.10.0' })
+      : openAIProviderAdapter({ provider, version: '6.46.0' }), client });
+    expect('models' in client ? client.models!.generateContentInternal(request)
+      : client.chat!.completions.create(request)).toBe(result);
+    const records = await traceRecords((await capture.shutdown()).artifactPath);
+    expect(reads).toBe(0);
+    expect(records.filter((record) => record.kind === 'loss'
+      && record.data.reason === 'provider_candidate_ambiguity')).toEqual([]);
+  });
+
+  it.each([
+    { requested: false, cancel: false },
+    { requested: true, cancel: false },
+    { requested: false, cancel: true },
+  ])('observes separate stream alternatives with requested=$requested cancel=$cancel', async ({ requested, cancel }) => {
+    const chunks = [response([0]), response([1]), response([1])];
+    let consumed = 0;
+    const stream = {
+      async *[Symbol.asyncIterator]() {
+        for (const chunk of chunks) { consumed += 1; yield chunk; }
+      },
+    };
+    const call = (_request: unknown) => stream;
+    const client = provider === 'gemini'
+      ? { models: { generateContentInternal: call, generateContentStreamInternal: call } }
+      : { responses: { create: call }, chat: { completions: { create: call } } };
+    const output = await mkdtemp(join(tmpdir(), 'semantic-stream-candidate-ambiguity-'));
+    const capture = initialize({ output, serviceName: 'stream-candidate-ambiguity' });
+    capture.instrument({ adapter: provider === 'gemini'
+      ? geminiProviderAdapter({ version: '2.10.0' })
+      : openAIProviderAdapter({ provider, version: '6.46.0' }), client });
+    const request = provider === 'gemini'
+      ? { model: 'fixture', contents: 'Hello', config: { candidateCount: requested ? 2 : 1 } }
+      : { model: 'fixture', messages: [{ role: 'user', content: 'Hello' }], n: requested ? 2 : 1 };
+    const returned = 'models' in client
+      ? client.models!.generateContentStreamInternal(request)
+      : client.chat!.completions.create(request);
+    expect(returned).toBe(stream);
+    expect(consumed).toBe(0);
+    let index = 0;
+    for await (const chunk of returned) {
+      expect(chunk).toBe(chunks[index++]);
+      if (cancel) break;
+    }
+    expect(consumed).toBe(cancel ? 1 : 3);
+    const records = await traceRecords((await capture.shutdown()).artifactPath);
+    if (cancel) {
+      expect(records.find((record) => record.kind === 'model.response')?.data).toMatchObject({
+        status: 'cancelled', content: 'answer 0',
+      });
+      expect(records.filter((record) => record.kind === 'loss')).toEqual([]);
+      return;
+    }
+    expect(records.filter((record) => record.kind === 'loss')).toEqual([
+      expect.objectContaining({ data: expect.objectContaining({
+        reason: 'provider_candidate_ambiguity', count: 1, recoverable: false,
+      }) }),
+    ]);
+  });
+});

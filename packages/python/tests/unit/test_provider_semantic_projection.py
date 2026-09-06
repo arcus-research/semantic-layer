@@ -3274,3 +3274,130 @@ def test_gemini_unexpected_text_in_afc_suffix_invalidates_all_pairs(
         for record in records
         if record["kind"] in {"tool.proposal", "tool.call", "tool.result"}
     ]
+
+
+@pytest.mark.parametrize("provider", ["openai", "openrouter", "gemini"])
+@pytest.mark.parametrize("mode", ["single", "request", "response", "stream", "cancel"])
+def test_candidate_ambiguity_is_bounded_and_preserves_delivered_evidence(
+    tmp_path: Path,
+    provider: str,
+    mode: str,
+) -> None:
+    def candidate(index: int) -> dict[str, Any]:
+        if provider == "gemini":
+            return {
+                "index": index,
+                "content": {
+                    "role": "model",
+                    "parts": [
+                        {"text": f"answer-{index}"},
+                        {
+                            "function_call": {
+                                "id": f"call-{index}",
+                                "name": f"tool_{index}",
+                                "args": {"slot": index},
+                            }
+                        },
+                    ],
+                },
+            }
+        return {
+            "index": index,
+            "message": {
+                "role": "assistant",
+                "content": f"answer-{index}",
+                "tool_calls": [
+                    {
+                        "id": f"call-{index}",
+                        "type": "function",
+                        "function": {
+                            "name": f"tool_{index}",
+                            "arguments": json.dumps({"slot": index}),
+                        },
+                    },
+                ],
+            },
+        }
+
+    key = "candidates" if provider == "gemini" else "choices"
+    response = {key: [candidate(0), candidate(1)] if mode == "response" else [candidate(0)]}
+    chunks = [{key: [candidate(index)]} for index in [0, 1, 1]]
+    if provider != "gemini":
+        for chunk in chunks:
+            chunk[key][0]["delta"] = chunk[key][0].pop("message")
+    consumed: list[int] = []
+
+    def generate(**_kwargs: Any) -> Any:
+        return response
+
+    def stream(**_kwargs: Any) -> Any:
+        for index, chunk in enumerate(chunks):
+            consumed.append(index)
+            yield chunk
+
+    if provider == "gemini":
+        models = SimpleNamespace(generate_content=generate, generate_content_stream=stream)
+        client = SimpleNamespace(
+            models=models, aio=SimpleNamespace(models=SimpleNamespace(**vars(models)))
+        )
+
+        def invoke(**kwargs: Any) -> Any:
+            return client.models.generate_content(**kwargs)
+
+        def invoke_stream() -> Any:
+            return client.models.generate_content_stream(model="fixture", contents="hello")
+
+        adapter = gemini_provider_adapter(version="2.11.0")
+        request = {
+            "model": "fixture",
+            "contents": "hello",
+            "config": {"candidate_count": 2 if mode == "request" else 1},
+        }
+    else:
+        client = SimpleNamespace(
+            responses=SimpleNamespace(create=generate),
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(
+                    create=stream if mode in {"stream", "cancel"} else generate
+                )
+            ),
+        )
+
+        def invoke(**kwargs: Any) -> Any:
+            return client.chat.completions.create(**kwargs)
+
+        def invoke_stream() -> Any:
+            return client.chat.completions.create(model="fixture", messages=[], stream=True)
+
+        adapter = openai_provider_adapter(version="2.45.0", provider=provider)
+        request = {"model": "fixture", "messages": [], "n": 2 if mode == "request" else 1}
+    capture = initialize(output=tmp_path, service_name="candidate-ambiguity")
+    capture.instrument(adapter=adapter, client=client)
+    if mode in {"stream", "cancel"}:
+        result = invoke_stream()
+        assert next(result) is chunks[0]
+        if mode == "cancel":
+            result.close()
+            assert consumed == [0]
+        else:
+            assert list(result) == chunks[1:]
+            assert consumed == [0, 1, 2]
+    else:
+        assert invoke(**request) is response
+    artifact_path = capture.shutdown().artifact_path
+    assert validate_artifact(artifact_path).valid
+    records = _trace_records(artifact_path)
+    losses = [
+        record
+        for record in records
+        if record["kind"] == "loss" and record["data"]["reason"] == "provider_candidate_ambiguity"
+    ]
+    assert len(losses) == (0 if mode in {"single", "cancel"} else 1)
+    responses = [record for record in records if record["kind"] == "model.response"]
+    assert len(responses) == 1
+    assert "answer-0" in json.dumps(responses[0])
+    proposals = [record for record in records if record["kind"] == "tool.proposal"]
+    if mode not in {"stream", "cancel"}:
+        assert {record["data"]["name"] for record in proposals} == (
+            {"tool_0", "tool_1"} if mode == "response" else {"tool_0"}
+        )

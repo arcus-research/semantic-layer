@@ -115,6 +115,7 @@ class _Trace:
     stream_finish_reason: str | None = None
     stream_usage: dict[str, int | float] = field(default_factory=dict)
     stream_tools: dict[str, dict[str, Any]] = field(default_factory=dict)
+    candidate_ambiguity_recorded: bool = False
     observation_loss_recorded: bool = False
     evidence_retention_loss_recorded: bool = False
     stream_semantic_loss_recorded: bool = False
@@ -529,6 +530,39 @@ class _ProviderSource(CaptureSource):
         except BaseException:
             return
 
+    def _record_candidate_ambiguity(
+        self, trace: _Trace, value: Any, *, request: bool = False
+    ) -> None:
+        if trace.candidate_ambiguity_recorded or not _has_alternative_candidates(
+            self.provider, value, request=request
+        ):
+            return
+        trace.candidate_ambiguity_recorded = True
+        self.sink.record(
+            {
+                "kind": "unknown",
+                "phase": "gap",
+                "name": f"{self.provider}.candidate.ambiguity",
+                "trace": trace.identity,
+                **(
+                    {"parent_record_id": trace.request_record_id}
+                    if trace.request_record_id is not None
+                    else {}
+                ),
+                "native": {"provider": self.provider},
+                "semantic": {
+                    "type": "capture.gap",
+                    "reason": "provider_candidate_ambiguity",
+                    "count": 1,
+                    "detail": (
+                        "Provider evidence establishes alternative response candidates. "
+                        "The captured response does not identify the application's selected "
+                        "candidate and cannot be treated as one assistant decision."
+                    ),
+                },
+            }
+        )
+
     def _retain_stream_part(self, trace: _Trace, part: Any) -> bool:
         remaining_bytes = _MAX_PROVIDER_STREAM_RETAINED_BYTES - trace.stream_retained_bytes
         remaining_nodes = _MAX_PROVIDER_STREAM_RETAINED_NODES - trace.stream_retained_nodes
@@ -639,6 +673,7 @@ class _ProviderSource(CaptureSource):
         return trace
 
     def _populate_start(self, trace: _Trace, operation: str, request: Any) -> None:
+        self._record_candidate_ambiguity(trace, request, request=True)
         gemini_request_retained = _retained_value_cost(
             request,
             _MAX_PROVIDER_EVIDENCE_BYTES,
@@ -835,6 +870,7 @@ class _ProviderSource(CaptureSource):
     def _settle(self, trace: _Trace | None, operation: str, result: Any) -> Any:
         if trace is None:
             return result
+        self._record_candidate_ambiguity(trace, result)
         owned = {} if type(result) is dict else native_own_data(result)
         iterator = dict.get(owned, "_iterator")
         if iterator is not None:
@@ -1219,6 +1255,7 @@ class _ProviderSource(CaptureSource):
     def _stream_part(self, trace: _Trace, part: Any) -> None:
         if trace.closed:
             return
+        self._record_candidate_ambiguity(trace, part)
         trace.response_id = (
             _exact_openai_stream_response_id(self.provider, trace.operation, part)
             or trace.response_id
@@ -3417,3 +3454,23 @@ def _restore_attribute(target: Any, key: str, wrapper: Any, had_own: bool, own_v
         setattr(target, key, own_value)
     else:
         delattr(target, key)
+
+
+def _has_alternative_candidates(provider: str, value: Any, *, request: bool) -> bool:
+    if provider not in {"openai", "openrouter", "gemini"}:
+        return False
+    if request:
+        if provider == "gemini":
+            config = _field(value, "config", "generation_config", "generationConfig")
+            count = _field(config, "candidate_count", "candidateCount")
+        else:
+            count = _field(value, "n")
+        return type(count) is int and count > 1
+    candidates = _field(value, "candidates" if provider == "gemini" else "choices")
+    if type(candidates) is not list or not candidates:
+        return False
+    if len(candidates) > 1:
+        return True
+    # A separate consumed chunk can expose only alternative 1 (or later).
+    index = _field(candidates[0], "index")
+    return type(index) is int and index > 0
