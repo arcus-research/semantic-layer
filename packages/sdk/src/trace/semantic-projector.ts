@@ -477,6 +477,12 @@ export class SemanticProjector {
     }
 
     if (semanticType === 'capture.gap') {
+      // Omitted control receipts can alias a parent, but do not identify evidence.
+      const refs = Array.isArray(semantic.affects_refs)
+        ? semantic.affects_refs.map((ref) =>
+          typeof ref === 'string' && this.projectedKinds.has(ref) ? ref : null)
+        : semantic.affects_refs;
+      const affected = resolveReferences(refs, this.projectedIds);
       const record = this.record(input, 'loss', {
         reason: lossReasonOf(text(semantic.reason) ?? 'unsupported_semantic_projection'),
         stage: 'source',
@@ -486,16 +492,29 @@ export class SemanticProjector {
         recoverable: false,
         ...(boundedDetail(semantic.detail)
           ? { detail: boundedDetail(semantic.detail)! } : {}),
-      }, parent);
-      return capturedParent && !parent && !this.omittedIds.has(capturedParent)
-        ? [record, this.supplementalLoss(
+      }, parent, affected.unresolved === 0
+        ? affected.records.map((record) => ({ type: 'affects', record }))
+        : undefined);
+      const records = [record];
+      if (affected.unresolved > 0) {
+        records.push(this.supplementalLoss(
+          input,
+          record,
+          'unresolved_affected_ref',
+          affected.unresolved,
+          'One or more affected record references were invalid or unavailable.',
+        ));
+      }
+      if (capturedParent && !parent && !this.omittedIds.has(capturedParent)) {
+        records.push(this.supplementalLoss(
           input,
           record,
           'unresolved_parent',
           1,
           'The declared parent was not available in the projected trace.',
-        )]
-        : [record];
+        ));
+      }
+      return records;
     }
 
     if (input.event_kind === 'loss' && input.loss) {

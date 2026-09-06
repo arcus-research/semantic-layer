@@ -298,25 +298,47 @@ class SemanticProjector:
             detail = self._bounded(semantic.get("detail"), 4096)
             if detail is not None:
                 data["detail"] = detail
+            raw_refs = semantic.get("affects_refs", [])
+            if not isinstance(raw_refs, list):
+                raw_refs = [None]
+            affected: list[str] = []
+            unresolved = 0
+            for raw_ref in raw_refs:
+                # Omitted control receipts can alias a parent, not evidence.
+                resolved = (
+                    self._records.get(raw_ref)
+                    if isinstance(raw_ref, str) and raw_ref in self._record_meta
+                    else None
+                )
+                if resolved is None:
+                    unresolved += 1
+                elif resolved not in affected:
+                    affected.append(resolved)
             record = self._record(
                 capture,
                 "loss",
                 data,
                 parent=self._parent(capture),
+                links=[{"type": "affects", "record": ref} for ref in affected]
+                if unresolved == 0 else None,
             )
-            if not self._explicit_parent_unresolved(capture):
-                return [record]
-            return [
-                record,
-                self._supplemental_loss(
+            records = [record]
+            if unresolved:
+                records.append(self._supplemental_loss(
+                    capture,
+                    affected=record,
+                    reason="unresolved_affected_ref",
+                    count=unresolved,
+                    detail="One or more affected record references were invalid or unavailable.",
+                ))
+            if self._explicit_parent_unresolved(capture):
+                records.append(self._supplemental_loss(
                     capture,
                     affected=record,
                     reason="unresolved_parent",
-                    detail=(
-                        "The declared parent was not available in the projected trace."
-                    ),
-                ),
-            ]
+                    detail="The declared parent was not available in the projected trace.",
+                ))
+            return records
         if event_kind == "loss":
             loss = self._project_runtime_loss(capture)
             if loss is not None:
