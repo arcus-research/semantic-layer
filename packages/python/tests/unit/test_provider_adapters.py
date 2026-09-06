@@ -1709,3 +1709,129 @@ def _trace_records(artifact_path: str) -> list[dict[str, Any]]:
     return [
         json.loads(line) for line in (Path(artifact_path) / "trace.jsonl").read_text().splitlines()
     ]
+
+
+@pytest.mark.parametrize("provider", ["openai", "openrouter"])
+def test_provider_tool_definitions_survive_sealed_capture(tmp_path: Path, provider: str) -> None:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "lookup",
+                "description": "Find a record",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                    "additionalProperties": False,
+                },
+            },
+        },
+        {
+            "type": "custom",
+            "name": "query",
+            "description": "Run synthetic-secret",
+            "format": {"type": "grammar", "syntax": "lark", "definition": "start: INT"},
+        },
+        {"type": "web_search_preview"},
+    ]
+    original = json.loads(json.dumps(tools))
+    result = {"id": "response", "choices": []}
+    client = _openai_fixture_client(lambda *_args, **_kwargs: result)
+    capture = initialize(
+        output=tmp_path, service_name="tool-definitions", secret_values=["synthetic-secret"]
+    )
+    capture.instrument(adapter=openai_provider_adapter(provider=provider), client=client)
+    assert client.responses.create(model="fixture", tools=tools) is result
+    assert tools == original
+    artifact = capture.shutdown()
+    assert validate_artifact(artifact.artifact_path).valid
+    records = _trace_records(artifact.artifact_path)
+    request = next(record["data"] for record in records if record["kind"] == "model.request")
+    assert request["tools"] == ["lookup", "query"]
+    definitions = request["tool_definitions"]
+    assert definitions[0] == original[0]
+    assert definitions[1]["format"] == original[1]["format"]
+    assert definitions[2] == original[2]
+    assert "synthetic-secret" not in json.dumps(records)
+    assert definitions[1]["description"] != original[1]["description"]
+
+
+def test_tool_definitions_respect_request_retention_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(provider_adapters_module, "_MAX_PROVIDER_EVIDENCE_BYTES", 128)
+    tools = [{"type": "function", "name": "lookup", "description": "x" * 1024}]
+    client = _openai_fixture_client(lambda *_args, **_kwargs: {"choices": []})
+    capture = initialize(output=tmp_path, service_name="bounded-tool-definitions")
+    capture.instrument(adapter=openai_provider_adapter(), client=client)
+    client.responses.create(model="fixture", tools=tools)
+    records = _trace_records(capture.shutdown().artifact_path)
+    request = next(record["data"] for record in records if record["kind"] == "model.request")
+    assert "tool_definitions" not in request
+    assert any(
+        record["kind"] == "loss"
+        and "openai.evidence.retention_truncated" in record["data"].get("detail", "")
+        for record in records
+    )
+
+
+def test_gemini_tool_definition_groups_keep_native_order(tmp_path: Path) -> None:
+    top = [{"google_search": {}}]
+    configured = [
+        {
+            "function_declarations": [
+                {
+                    "name": "lookup",
+                    "description": "Find",
+                    "parameters": {"type": "OBJECT", "properties": {"count": {"type": "INTEGER"}}},
+                }
+            ]
+        }
+    ]
+    models = SimpleNamespace(
+        generate_content=lambda **_kwargs: {}, generate_content_stream=lambda **_kwargs: iter([])
+    )
+    client = SimpleNamespace(
+        models=models, aio=SimpleNamespace(models=SimpleNamespace(**vars(models)))
+    )
+    capture = initialize(output=tmp_path, service_name="gemini-tool-definitions")
+    capture.instrument(adapter=gemini_provider_adapter(version="2.11.0"), client=client)
+    client.models.generate_content(
+        model="fixture", contents="Hello", tools=top, config={"tools": configured}
+    )
+    records = _trace_records(capture.shutdown().artifact_path)
+    request = next(record["data"] for record in records if record["kind"] == "model.request")
+    assert request["tools"] == ["lookup"]
+    assert request["tool_definitions"] == top + configured
+
+
+def test_tool_definition_snapshot_limits_remain_named(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import semantic_layer._adapter_native as native_module
+
+    monkeypatch.setattr(native_module, "MAX_SNAPSHOT_DEPTH", 4)
+    tools = [
+        {
+            "type": "function",
+            "name": "lookup",
+            "parameters": {"properties": {"nested": {"type": "object", "description": "too deep"}}},
+        }
+    ]
+    original = json.loads(json.dumps(tools))
+    client = _openai_fixture_client(lambda *_args, **_kwargs: {"choices": []})
+    capture = initialize(output=tmp_path, service_name="snapshot-tool-definitions")
+    capture.instrument(adapter=openai_provider_adapter(), client=client)
+    client.responses.create(model="fixture", tools=tools)
+    records = _trace_records(capture.shutdown().artifact_path)
+    assert tools == original
+    request = next(record["data"] for record in records if record["kind"] == "model.request")
+    assert request["tools"] == ["lookup"]
+    assert "too deep" not in json.dumps(request["tool_definitions"])
+    assert any(
+        record["kind"] == "loss" and record["data"]["reason"] == "serialization_failure"
+        for record in records
+    )
