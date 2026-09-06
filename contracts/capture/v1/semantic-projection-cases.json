@@ -1591,6 +1591,391 @@
           }
         }
       ]
+    },
+    {
+      "name": "custom gaps scope exact earlier receipts and fail closed for forward references",
+      "events": [
+        {
+          "record_id": "rec_root_start",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "fixture run"
+          }
+        },
+        {
+          "record_id": "rec_context",
+          "event_kind": "log",
+          "phase": "event",
+          "name": "fixture.message",
+          "semantic": {
+            "type": "message",
+            "role": "user",
+            "content": {
+              "text": "Find the weather."
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_model_request",
+          "event_kind": "model",
+          "phase": "start",
+          "name": "fixture.model",
+          "native_identity": "model-1",
+          "semantic": {
+            "type": "model.request",
+            "model": "fixture-model",
+            "context_refs": [
+              "rec_context"
+            ],
+            "tools": [
+              "get_weather"
+            ],
+            "tool_definitions": [
+              {
+                "name": "get_weather",
+                "description": "Read the weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "settings": {
+              "temperature": 0,
+              "max_output_tokens": 128
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_scoped",
+          "event_kind": "log",
+          "phase": "event",
+          "name": "capture.gap",
+          "semantic": {
+            "type": "capture.gap",
+            "reason": "ambiguous_response",
+            "detail": "Response identity unavailable.",
+            "count": 2,
+            "affects_refs": [
+              "rec_model_request",
+              "rec_context",
+              "rec_model_request"
+            ]
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_forward",
+          "event_kind": "log",
+          "phase": "event",
+          "name": "capture.gap",
+          "semantic": {
+            "type": "capture.gap",
+            "reason": "ambiguous_response",
+            "detail": "Response identity unavailable.",
+            "count": 2,
+            "affects_refs": [
+              "rec_model_request",
+              "rec_model_response"
+            ]
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_model_response",
+          "event_kind": "model",
+          "phase": "end",
+          "name": "fixture.model",
+          "native_identity": "model-1",
+          "semantic": {
+            "type": "model.response",
+            "status": "completed",
+            "content": {
+              "text": "I will check."
+            }
+          },
+          "correlation": {
+            "parent_record_id": "rec_model_request"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_root_start",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "fixture run"
+          }
+        },
+        {
+          "id": "rec_context",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "message",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "role": "user",
+            "content": {
+              "text": "Find the weather."
+            }
+          }
+        },
+        {
+          "id": "rec_model_request",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.request",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "model": "fixture-model",
+            "context_refs": [
+              "rec_context"
+            ],
+            "tools": [
+              "get_weather"
+            ],
+            "tool_definitions": [
+              {
+                "name": "get_weather",
+                "description": "Read the weather",
+                "input_schema": {
+                  "type": "object",
+                  "properties": {
+                    "city": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "city"
+                  ]
+                }
+              }
+            ],
+            "settings": {
+              "temperature": 0,
+              "max_output_tokens": 128
+            }
+          }
+        },
+        {
+          "id": "rec_scoped",
+          "seq": 4,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "reason": "ambiguous_response",
+            "stage": "source",
+            "count": 2,
+            "recoverable": false,
+            "detail": "Response identity unavailable."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_model_request"
+            },
+            {
+              "type": "affects",
+              "record": "rec_context"
+            }
+          ]
+        },
+        {
+          "id": "rec_forward",
+          "seq": 5,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "reason": "ambiguous_response",
+            "stage": "source",
+            "count": 2,
+            "recoverable": false,
+            "detail": "Response identity unavailable."
+          }
+        },
+        {
+          "id": "__generated_record_1__",
+          "seq": 6,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "reason": "unresolved_affected_ref",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "One or more affected record references were invalid or unavailable."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_forward"
+            }
+          ]
+        },
+        {
+          "id": "rec_model_response",
+          "seq": 7,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "model.response",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "status": "completed",
+            "content": {
+              "text": "I will check."
+            }
+          },
+          "links": [
+            {
+              "type": "result_of",
+              "record": "rec_model_request"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "custom gap rejects transparent OTel parent aliases without partial scope",
+      "events": [
+        {
+          "record_id": "rec_root_start",
+          "event_kind": "lifecycle",
+          "phase": "start",
+          "name": "fixture.run",
+          "semantic": {
+            "type": "agent.run",
+            "name": "fixture run"
+          }
+        },
+        {
+          "record_id": "rec_control",
+          "event_kind": "correlation",
+          "phase": "event",
+          "name": "otel.control",
+          "source": {
+            "source_id": "official/example-framework",
+            "name": "generic:otel",
+            "seam": "fixture.callback",
+            "identity_domain": "fixture.operation",
+            "official": true
+          },
+          "semantic": {
+            "type": "capture.control",
+            "route": "otel"
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        },
+        {
+          "record_id": "rec_alias_gap",
+          "event_kind": "log",
+          "phase": "event",
+          "name": "capture.gap",
+          "semantic": {
+            "type": "capture.gap",
+            "reason": "ambiguous_response",
+            "detail": "Response identity unavailable.",
+            "count": 2,
+            "affects_refs": [
+              "rec_root_start",
+              "rec_control"
+            ]
+          },
+          "correlation": {
+            "parent_record_id": "rec_root_start"
+          }
+        }
+      ],
+      "expected": [
+        {
+          "id": "rec_root_start",
+          "seq": 1,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "run.start",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "data": {
+            "name": "fixture run"
+          }
+        },
+        {
+          "id": "rec_alias_gap",
+          "seq": 2,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "reason": "ambiguous_response",
+            "stage": "source",
+            "count": 2,
+            "recoverable": false,
+            "detail": "Response identity unavailable."
+          }
+        },
+        {
+          "id": "__generated_record_1__",
+          "seq": 3,
+          "time": "2026-07-28T00:00:00.000Z",
+          "kind": "loss",
+          "origin": "observed",
+          "source": "__generated_source_1__",
+          "parent": "rec_root_start",
+          "data": {
+            "reason": "unresolved_affected_ref",
+            "stage": "source",
+            "count": 1,
+            "recoverable": false,
+            "detail": "One or more affected record references were invalid or unavailable."
+          },
+          "links": [
+            {
+              "type": "affects",
+              "record": "rec_alias_gap"
+            }
+          ]
+        }
+      ]
     }
   ]
 }

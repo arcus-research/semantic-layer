@@ -176,6 +176,43 @@ files directly.
 TypeScript exports `CaptureSource`, `SourceSink`, `OpenTraceRecord`, and
 `SourceRecord`. Python exports `CaptureSource`.
 
+A lower level source can scope a `capture.gap` to earlier admitted source
+receipts with `semantic.affects_refs`:
+
+```ts
+const request = sink.record({
+  kind: 'model', phase: 'start', name: 'model.request', trace,
+  native: null,
+  semantic: { type: 'model.request', model: 'example-model', context_refs: [] },
+});
+if (request.accepted) {
+  sink.record({
+    kind: 'log', phase: 'event', name: 'capture.gap', trace,
+    native: null,
+    semantic: {
+      type: 'capture.gap',
+      reason: 'ambiguous_response',
+      detail: 'The source could not correlate the response for this request.',
+      affects_refs: [request.recordId],
+    },
+  });
+}
+```
+
+Here `sink` is the source's installed sink and `trace` is the identity from an
+accepted `sink.openTrace()` receipt. Python uses the same semantic field
+`affects_refs` with admitted `receipt.record_id` values. These references become
+canonical `loss.links` entries of type `affects`. Duplicate references are
+removed while preserving their first occurrence.
+
+Use only exact earlier receipts whose records remain available to the
+projector. Do not guess IDs from order, time, names, or content. If any supplied
+reference is malformed or unavailable (including a future or omitted record),
+the original gap remains entirely unscoped and an `unresolved_affected_ref`
+loss explains the failure. The original reason, detail, and count are retained
+under their normal validation and bounds. An absent or empty `affects_refs`
+keeps the existing unscoped behavior.
+
 All custom integrations follow the [capture contract](capture-contract.md).
 One complete bundle test should prove exact correlation, application behavior,
 shutdown, and named losses before the integration is used in production.
