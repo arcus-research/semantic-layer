@@ -308,6 +308,8 @@ function patchMethod(
       history.requestRef = requestReceipt.recordId;
     }
     const requestRecordId = requestReceipt.accepted ? requestReceipt.recordId : undefined;
+    const observeCandidates = candidateAmbiguityObserver(provider, sink, trace, requestRecordId);
+    observeCandidates(nativeRequest, true);
     let result: unknown;
     try {
       result = original.apply(this, args);
@@ -317,17 +319,19 @@ function patchMethod(
     }
     if (!isThenable(result)) {
       settleResult(
-        provider, operation, sink, trace, result, requestRecordId, geminiToolCorrelation, context,
+        provider, operation, sink, trace, result, observeCandidates, requestRecordId,
+        geminiToolCorrelation, context,
       );
       return result;
     }
     if (observeInternalPromise) {
       return observeAdapterInternalPromise(
-        result, provider, operation, sink, trace, requestRecordId, geminiToolCorrelation, context,
+        result, provider, operation, sink, trace, observeCandidates, requestRecordId,
+        geminiToolCorrelation, context,
       );
     }
     if (isLazyProviderPromise(result) && instrumentLazyProviderPromise(
-      result, provider, operation, sink, trace, requestRecordId,
+      result, provider, operation, sink, trace, observeCandidates, requestRecordId,
     )) {
       return result;
     }
@@ -347,6 +351,7 @@ function observeAdapterInternalPromise(
   operation: string,
   sink: SourceSink,
   trace: TraceIdentity,
+  observeCandidates: (value: unknown, request?: boolean) => void,
   requestRecordId?: string,
   geminiToolCorrelation?: GeminiToolCorrelation,
   context?: ProviderCaptureContext,
@@ -354,7 +359,8 @@ function observeAdapterInternalPromise(
   return Promise.resolve(result).then(
     (value) => {
       settleResult(
-        provider, operation, sink, trace, value, requestRecordId, geminiToolCorrelation, context,
+        provider, operation, sink, trace, value, observeCandidates, requestRecordId,
+        geminiToolCorrelation, context,
       );
       return value;
     },
@@ -405,6 +411,7 @@ function instrumentLazyProviderPromise(
   operation: string,
   sink: SourceSink,
   trace: TraceIdentity,
+  observeCandidates: (value: unknown, request?: boolean) => void,
   requestRecordId?: string,
 ): boolean {
   const candidate = result as unknown as MethodTarget;
@@ -428,7 +435,7 @@ function instrumentLazyProviderPromise(
     if (!completed) {
       completed = true;
       restoreDescriptors();
-      settleResult(provider, operation, sink, trace, value, requestRecordId);
+      settleResult(provider, operation, sink, trace, value, observeCandidates, requestRecordId);
     }
     return value;
   };
@@ -502,19 +509,23 @@ function settleResult(
   sink: SourceSink,
   trace: TraceIdentity,
   value: unknown,
+  observeCandidates: (value: unknown, request?: boolean) => void,
   requestRecordId?: string,
   geminiToolCorrelation?: GeminiToolCorrelation,
   context?: ProviderCaptureContext,
 ): void {
   if (instrumentStream(
-    value, provider, operation, sink, trace, requestRecordId, geminiToolCorrelation, context,
+    value, provider, operation, sink, trace, observeCandidates, requestRecordId,
+    geminiToolCorrelation, context,
   )) return;
+  const nativeResponse = providerResponseNative(provider, value);
+  observeCandidates(nativeResponse);
   const responseId = exactOpenAIResponseId(provider, operation, value);
   const responseReceipt = sink.record({
     kind: 'model', phase: 'event', name: `${provider}.response`, trace,
     ...(responseId ? { nativeIdentity: responseId, coverage: OPENAI_RESPONSE_COVERAGE } : {}),
     ...(requestRecordId ? { parentRecordId: requestRecordId } : {}),
-    native: { provider, operation, response: providerResponseNative(provider, value) },
+    native: { provider, operation, response: nativeResponse },
     semantic: { type: 'model.response', provider, ...modelResponseFields(provider, value) },
   });
   if (responseReceipt.accepted && providerReasoningUnavailable(provider, value)) {
@@ -535,6 +546,7 @@ function instrumentStream(
   operation: string,
   sink: SourceSink,
   trace: TraceIdentity,
+  observeCandidates: (value: unknown, request?: boolean) => void,
   requestRecordId?: string,
   geminiToolCorrelation?: GeminiToolCorrelation,
   context?: ProviderCaptureContext,
@@ -616,6 +628,7 @@ function instrumentStream(
   };
   const observePart = (part: unknown): void => {
     lastPart = providerResponseNative(provider, part);
+    observeCandidates(lastPart);
     aggregate.observe(part);
     if (provider === 'gemini') {
       recordUsageAndTools(
@@ -1741,6 +1754,43 @@ function sanitizeAnthropicThinkingBlock(block: unknown): unknown {
   if (block.type !== 'thinking') return block;
   const { signature: _signature, ...readable } = block;
   return readable;
+}
+
+/** Inspect copied evidence only; never read provider accessors to identify alternatives. */
+function candidateAmbiguityObserver(
+  provider: ProviderName,
+  sink: SourceSink,
+  trace: TraceIdentity,
+  requestRecordId?: string,
+): (value: unknown, request?: boolean) => void {
+  let reported = false;
+  return (value, request = false) => {
+    if (reported || provider === 'anthropic' || !isObject(value)) return;
+    const metadata = request && isObject(value.metadata) ? value.metadata : value;
+    const count = provider === 'gemini'
+      ? (isObject(metadata.config) ? metadata.config.candidateCount : undefined)
+      : metadata.n;
+    const response = isObject(value.response) ? value.response : value;
+    const candidates = provider === 'gemini' ? response.candidates : response.choices;
+    const ambiguous = request
+      ? typeof count === 'number' && Number.isSafeInteger(count) && count > 1
+      : Array.isArray(candidates) && (candidates.length > 1 || candidates.some(
+        (candidate) => isObject(candidate)
+          && typeof candidate.index === 'number' && Number.isSafeInteger(candidate.index)
+          && candidate.index > 0,
+      ));
+    if (!ambiguous) return;
+    reported = true;
+    sink.record({
+      kind: 'model', phase: 'gap', name: `${provider}.candidate_ambiguity`, trace,
+      ...(requestRecordId ? { parentRecordId: requestRecordId } : {}),
+      native: { provider },
+      semantic: {
+        type: 'capture.gap', provider, reason: 'provider_candidate_ambiguity',
+        detail: 'Provider output alternatives lack candidate-scoped semantics; the selected application candidate is unknown and cannot be treated as one assistant decision.',
+      },
+    });
+  };
 }
 
 function providerReasoningUnavailable(provider: ProviderName, value: unknown): boolean {

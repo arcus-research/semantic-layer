@@ -71,6 +71,14 @@ proposals, and readable reasoning exposed by the provider. They normally do
 not observe the application tool callback, so a provider only trace usually has
 no `tool.call` or `tool.result`.
 
+OpenAI, OpenRouter, and Gemini adapters record `provider_candidate_ambiguity`
+once per provider operation when a request asks for multiple candidates, an
+observed response has multiple choices or candidates, or a consumed chunk
+exposes a candidate index greater than zero. The existing response projection
+can combine alternative evidence; this loss means it cannot establish one
+assistant decision or which candidate the application selected. Capture does
+not inspect an unconsumed stream tail or infer a hidden selection.
+
 Provider `model.request` records retain tool names in `tools` and exposed native
 request tool objects in `tool_definitions`, including descriptions, parameter
 schemas, custom tool formats, and provider tool types in request order. Gemini
