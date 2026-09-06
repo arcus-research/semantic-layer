@@ -697,6 +697,7 @@ class _ProviderSource(CaptureSource):
                     request,
                     plan.context_refs,
                     plan.context_base_ref,
+                    native_request=native_request,
                 )
                 if retained is not None
                 else {
@@ -1977,6 +1978,8 @@ def _model_request_fields(
     request: Any,
     context_refs: list[str],
     context_base_ref: str | None = None,
+    *,
+    native_request: Any = None,
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "context_refs": context_refs,
@@ -1992,6 +1995,16 @@ def _model_request_fields(
     tools = _request_tool_names(provider, request)
     if tools:
         result["tools"] = tools
+    metadata = _field(native_request, "metadata")
+    definitions = _field(metadata, "tools")
+    if provider == "gemini":
+        config_definitions = _field(_field(metadata, "config"), "tools")
+        definitions = [
+            *(definitions if isinstance(definitions, list) else []),
+            *(config_definitions if isinstance(config_definitions, list) else []),
+        ]
+    if isinstance(definitions, list) and definitions:
+        result["tool_definitions"] = definitions
     return result
 
 

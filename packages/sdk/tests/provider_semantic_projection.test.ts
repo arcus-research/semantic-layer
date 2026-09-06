@@ -2384,3 +2384,52 @@ async function traceRecords(artifactPath: string): Promise<SemanticTraceRecord[]
   }
   return records;
 }
+
+it.each(['openai', 'openrouter'] as const)('retains %s native tool definitions through sealed capture', async (provider) => {
+  const tools = [
+    { type: 'function', function: { name: 'lookup', description: 'Find a record',
+      parameters: { type: 'object', properties: { id: { type: 'integer' } },
+        required: ['id'], additionalProperties: false } } },
+    { type: 'custom', name: 'query', description: 'Run synthetic-secret',
+      format: { type: 'grammar', syntax: 'lark', definition: 'start: INT' } },
+    { type: 'web_search_preview' },
+  ];
+  const original = structuredClone(tools);
+  const result = { id: 'response', choices: [] };
+  const client = {
+    responses: { create: async (_request: unknown) => result },
+    chat: { completions: { create: async () => result } },
+  };
+  const output = await mkdtemp(join(tmpdir(), 'semantic-tool-definitions-'));
+  const capture = initialize({ output, serviceName: 'tool-definitions', secretValues: ['synthetic-secret'] });
+  capture.instrument({ adapter: openAIProviderAdapter({ provider, version: '6.46.0' }), client });
+  expect(await client.responses.create({ model: 'fixture', tools })).toBe(result);
+  expect(tools).toEqual(original);
+  const records = await traceRecords((await capture.shutdown()).artifactPath);
+  const request = records.find((record) => record.kind === 'model.request')!.data;
+  expect(request.tools).toEqual(['lookup', 'query']);
+  expect(request.tool_definitions).toEqual([
+    original[0], { ...original[1], description: expect.not.stringContaining('synthetic-secret') }, original[2],
+  ]);
+  expect(JSON.stringify(records)).not.toContain('synthetic-secret');
+});
+
+it('retains Gemini native tool groups from config in order', async () => {
+  const tools = [{ functionDeclarations: [{ name: 'lookup', description: 'Find',
+    parameters: { type: 'OBJECT', properties: { count: { type: 'INTEGER' } } } }] },
+  { googleSearch: {} }];
+  const original = structuredClone(tools);
+  const client = { models: {
+    generateContentInternal: async (_request: unknown) => ({ candidates: [] }),
+    generateContentStreamInternal: async function* () {},
+  } };
+  const output = await mkdtemp(join(tmpdir(), 'semantic-gemini-tool-definitions-'));
+  const capture = initialize({ output, serviceName: 'gemini-tool-definitions' });
+  capture.instrument({ adapter: geminiProviderAdapter({ version: '2.11.0' }), client });
+  await client.models.generateContentInternal({ model: 'fixture', contents: 'Hello', config: { tools } });
+  const records = await traceRecords((await capture.shutdown()).artifactPath);
+  const request = records.find((record) => record.kind === 'model.request')!.data;
+  expect(request.tools).toEqual(['lookup']);
+  expect(request.tool_definitions).toEqual(original);
+  expect(tools).toEqual(original);
+});

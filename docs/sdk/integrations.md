@@ -71,6 +71,16 @@ proposals, and readable reasoning exposed by the provider. They normally do
 not observe the application tool callback, so a provider only trace usually has
 no `tool.call` or `tool.result`.
 
+Provider `model.request` records retain tool names in `tools` and exposed native
+request tool objects in `tool_definitions`, including descriptions, parameter
+schemas, custom tool formats, and provider tool types in request order. Gemini
+retains top-level tool objects followed by `config.tools` objects, including
+function declaration groups. Definitions use the existing native snapshot and
+credential scrubbing boundaries; resource limits and their named losses still
+apply. Callable tools retain only what the snapshot exposes, not reconstructed
+schemas. This does not recover hidden context, additional response choices, or
+citations that the adapter does not otherwise expose.
+
 Framework adapters observe their official lifecycle, model, tool, state, and
 message callbacks. The exact evidence differs because each framework exposes a
 different public interface. The adapter keeps a missing fact absent or records

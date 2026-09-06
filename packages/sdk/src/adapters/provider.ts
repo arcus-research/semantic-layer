@@ -281,12 +281,13 @@ function patchMethod(
       trace,
       history,
     );
+    const nativeRequest = providerRequestNative(provider, request, contextPlan.messageCount);
     const requestReceipt = sink.record({
       kind: 'model', phase: 'event', name: `${provider}.request`, trace,
       native: {
         provider,
         operation,
-        request: providerRequestNative(provider, request, contextPlan.messageCount),
+        request: nativeRequest,
       },
       semantic: {
         type: 'model.request', provider,
@@ -295,6 +296,7 @@ function patchMethod(
           request,
           contextPlan.contextRefs,
           contextPlan.contextBaseRef,
+          nativeRequest,
         ),
         ...(orderedGeminiResultCallIds ? { call_ids: orderedGeminiResultCallIds } : {}),
       },
@@ -1606,6 +1608,7 @@ function modelRequestFields(
   request: unknown,
   contextRefs?: readonly string[],
   contextBaseRef?: string,
+  nativeRequest?: unknown,
 ): Record<string, unknown> {
   if (!isObject(request)) {
     return {
@@ -1615,11 +1618,18 @@ function modelRequestFields(
   }
   const model = exactIdentity(request.model);
   const tools = requestToolNames(provider, request);
+  const metadata = isObject(nativeRequest) && isObject(nativeRequest.metadata)
+    ? nativeRequest.metadata : {};
+  const definitions = Array.isArray(metadata.tools) ? metadata.tools : [];
+  const configDefinitions = provider === 'gemini' && isObject(metadata.config)
+    && Array.isArray(metadata.config.tools) ? metadata.config.tools : [];
+  const toolDefinitions = [...definitions, ...configDefinitions];
   return {
     ...(contextRefs ? { context_refs: [...contextRefs] } : {}),
     ...(contextBaseRef ? { context_base_ref: contextBaseRef } : {}),
     ...(model ? { model } : {}),
     ...(tools.length ? { tools } : {}),
+    ...(toolDefinitions.length ? { tool_definitions: toolDefinitions } : {}),
   };
 }
 
