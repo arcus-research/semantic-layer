@@ -6,6 +6,7 @@
     { "path": "./packages/cloud-ingest" },
     { "path": "./packages/openclaw" },
     { "path": "./packages/openclaw-setup" },
+    { "path": "./packages/sift" },
     { "path": "./packages/trace-cli" }
   ]
 }
