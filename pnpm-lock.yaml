@@ -84,7 +84,7 @@ importers:
         version: link:../sdk
       semantic-layer-cloud:
         specifier: 0.1.0-pilot.4
-        version: link:../cloud
+        version: 0.1.0-pilot.4
     devDependencies:
       '@types/node':
         specifier: ^20.11.0
@@ -109,7 +109,7 @@ importers:
         version: 2.2.3
       semantic-layer-cloud:
         specifier: 0.1.0-pilot.4
-        version: link:../cloud
+        version: 0.1.0-pilot.4
     devDependencies:
       '@types/node':
         specifier: ^20.11.0
@@ -208,6 +208,18 @@ importers:
       strands-previous:
         specifier: npm:@strands-agents/sdk@1.8.0
         version: /@strands-agents/sdk@1.8.0(@anthropic-ai/sdk@0.111.0)(@google/genai@2.11.0)(@modelcontextprotocol/sdk@1.29.0)(@opentelemetry/api@1.9.1)(@opentelemetry/resources@2.9.0)(@opentelemetry/sdk-trace-base@2.9.0)(express@5.2.1)(openai@6.46.0)(zod@4.4.3)
+      typescript:
+        specifier: ~5.7.0
+        version: 5.7.3
+      vitest:
+        specifier: ^1.2.0
+        version: 1.6.1(@types/node@20.19.43)
+
+  packages/sift:
+    devDependencies:
+      '@types/node':
+        specifier: ^20.11.0
+        version: 20.19.43
       typescript:
         specifier: ~5.7.0
         version: 5.7.3
@@ -7916,6 +7928,29 @@ packages:
   /secure-json-parse@2.7.0:
     resolution: {integrity: sha512-6aU+Rwsezw7VR8/nyvKTx8QpWH9FrcYiXXlqC4z5d5XQBDRqtbfsRjnwGyqbi3gddNtWHuEk9OANUotL26qKUw==}
     dev: true
+
+  /semantic-layer-capture@0.2.0-beta.2:
+    resolution: {integrity: sha512-tN6/hizohs5LAM5OI7yX30m/CDjuTL6BsiKa31smEcxN/wOQyFdgfbpFUGY1EuxREBm7F87MQW3GmRSx2PB8AA==}
+    engines: {node: ^22.0.0 || ^24.0.0 || >=25.9.0}
+    peerDependencies:
+      '@opentelemetry/api': '>=1.8 <2'
+    peerDependenciesMeta:
+      '@opentelemetry/api':
+        optional: true
+    dependencies:
+      ajv: 8.17.1
+      ajv-formats: 3.0.1(ajv@8.17.1)
+    dev: false
+
+  /semantic-layer-cloud@0.1.0-pilot.4:
+    resolution: {integrity: sha512-hP1ngf2UBZ8qeaI8Hd1OB9I5fLzKsWQayWSptFQNuKfUEc5IcthFRoqFRt6VpriCTp/Bv7+QPyhNmt5Gm6d3CA==}
+    engines: {node: ^22.0.0 || ^24.0.0 || >=25.9.0}
+    hasBin: true
+    dependencies:
+      semantic-layer-capture: 0.2.0-beta.2
+    transitivePeerDependencies:
+      - '@opentelemetry/api'
+    dev: false
 
   /semver@7.8.5:
     resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}

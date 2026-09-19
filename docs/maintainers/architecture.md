@@ -51,6 +51,7 @@ Adjacent modules keep transport and host concerns outside the capture runtime:
 | Cloud uploader | Bundle validation, durable spooling, and exact-byte transport | Trace interpretation |
 | Ingest receiver | Authentication, admission, canonical validation, write-once object creation, and completion receipts | Agent or framework semantics |
 | GCP infrastructure | Deployment wiring, IAM, alerts, and enforced platform configuration | Application behavior |
+| SIFT search | Archive ranking, Bradley–Terry fit, parent sampling, and the disaggregated expansion/evaluation loop | Capture projection, artifact writing, live model APIs, or benchmark runners |
 
 Use this page to place capture changes. The [ingest contract](../../contracts/ingest/v1/README.md)
 defines cloud transport. The [deployment guide](cloud/deployment.md) and
@@ -95,6 +96,7 @@ Each module has one direction of responsibility:
 | Custom agents | [`custom-agent.ts`](../../packages/sdk/src/custom-agent.ts) | [`custom_agent.py`](../../packages/python/semantic_layer/custom_agent.py) | Use the typed bridge for stable callbacks. Add one application source only when the bridge cannot express an exposed fact. |
 | OpenTelemetry | [`adapters/otel.ts`](../../packages/sdk/src/adapters/otel.ts) | [`otel.py`](../../packages/python/semantic_layer/otel.py) | Project only supported GenAI evidence. Ordinary infrastructure spans are outside the compact trace. |
 | Parent context | [`v1/parent-context.ts`](../../packages/sdk/src/v1/parent-context.ts) | [`parent_context.py`](../../packages/python/semantic_layer/parent_context.py) | Resolve supplied, inherited, or active W3C context exactly. Invalid or required-but-missing context becomes a named gap. |
+| SIFT tree search | [`packages/sift`](../../packages/sift) | [`semantic_layer/sift`](../../packages/python/semantic_layer/sift) | Keep the paper kernel local and host-injected. Do not export it from the capture public API or persist a sidecar next to `trace.jsonl`. |
 | Repository quality gate | Scripts in [`package.json`](../../package.json) and [pull request CI](../../.github/workflows/pr.yml) | Same repository check | `pnpm verify` is the complete check. Focused commands only shorten feedback. |
 
 The persisted record and legacy manifest schemas live in

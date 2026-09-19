@@ -65,6 +65,7 @@ The main source directories are:
 - `packages/python/` for the Python SDK.
 - `packages/openclaw/` for the OpenClaw plugin.
 - `packages/openclaw-setup/` for OpenClaw setup and diagnosis.
+- `packages/sift/` for the SIFT self-improvement tree-search kernel.
 - `packages/cloud/` for the uploader.
 - `packages/cloud-ingest/` for the private receiver.
 - `contracts/` for capture, trace, and ingest schemas.

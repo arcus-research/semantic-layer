@@ -30,6 +30,7 @@ can inspect those bundles for silent and logical failures.
 
 - [TypeScript SDK](../../packages/sdk/README.md)
 - [Python SDK](../../packages/python/README.md)
+- [SIFT tree search](sift.md)
 - [OpenClaw setup](../openclaw/setup.md)
 
 The TypeScript and Python SDKs write local bundles. The separate cloud package

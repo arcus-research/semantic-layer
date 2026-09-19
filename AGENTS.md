@@ -21,6 +21,8 @@ traces for silent and logical failure analysis.
 - `contracts/ingest/v1/` defines cloud transport shared by every framework.
 - `packages/cloud/`, `packages/cloud-ingest/`, and `infra/gcp/` contain the
   optional uploader, receiver, and hosted infrastructure.
+- `packages/sift/` and `packages/python/semantic_layer/sift/` contain the
+  SIFT tree-search kernel. It is not capture runtime.
 - Executable tests settle behavior when prose and implementation disagree.
 
 ## Product invariants
